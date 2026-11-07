@@ -4,13 +4,23 @@ const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 const connectDB = require('./src/config/db');
 const User = require('./src/models/user');
-const { loadPersistedState } = require('./src/ai/decisionEngine');
+const { loadPersistedState, getLatestCommand } = require('./src/ai/decisionEngine');
+const { ingestReading } = require('./src/controllers/sensorController');
+const overrides = require('./src/control/overrides');
+const mqttService = require('./src/mqtt/mqttService');
 require('dotenv').config();
 
 const PORT = process.env.PORT || 3000;
 
-// الاتصال بقاعدة البيانات، وبعدها نسترجع (قفل الصمام + الـ baseline) لو السيرفر اتعمله restart
-connectDB().then(loadPersistedState);
+// الاتصال بقاعدة البيانات، وبعدها نسترجع الحالة (صمام/baseline/أوامر يدوية)، وبعدها نشغّل MQTT
+connectDB()
+  .then(loadPersistedState)
+  .then(() => overrides.load())
+  .then(() => mqttService.start({
+    ingest: ingestReading,
+    getDecision: getLatestCommand,
+    applyOverrides: overrides.applyTo,
+  }));
 
 // إنشاء الـ Server
 const server = http.createServer(app);

@@ -8,6 +8,7 @@ const sensorRoutes = require('./routes/sensors');
 const alertRoutes = require('./routes/alerts');
 const dashboardRoutes = require('./routes/dashboard');
 const visionRoutes = require('./routes/vision');
+const deviceRoutes = require('./routes/devices');
 const errorHandler = require('./middleware/errorHandler');
 const { loginLimiter, verifyLimiter, authLimiter } = require('./middleware/rateLimits');
 
@@ -53,6 +54,7 @@ app.use('/api/sensors', sensorRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/vision', visionRoutes);
+app.use('/api/devices', deviceRoutes);
 
 // Health Check
 app.get('/', (req, res) => {
