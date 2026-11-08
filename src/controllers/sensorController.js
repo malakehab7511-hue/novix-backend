@@ -23,7 +23,9 @@ const ingestReading = async (body) => {
   if (!valid) return { error: 'قراءات غير صالحة' };
 
   // 1. شغّل الـ AI
-  const aiResult = await predictRisk({ mq2, mq6, flame, temperature, humidity });
+  // الـ deviceId بيحدد جلسة الـ AI V3 (معايرة + تاريخ القراءات لكل جهاز). الافتراضي 'default' عشان MQTT و HTTP يشاركوا نفس الجلسة.
+  const deviceId = String(b.deviceId || b.device_id || 'default');
+  const aiResult = await predictRisk({ mq2, mq6, flame, temperature, humidity, deviceId });
 
   // 2. مرّر النتيجة للـ Decision Engine
   const decision = processDecision(aiResult, { mq2, mq6, flame, temperature, humidity });
