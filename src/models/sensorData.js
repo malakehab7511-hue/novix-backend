@@ -38,6 +38,10 @@ const sensorDataSchema = new mongoose.Schema({
   buzzerStatus: {
     type: Boolean,
     default: false  // حالة الإنذار
+  },
+  relayStatus: {
+    type: Boolean,
+    default: false  // true = الريلاي شغال = الكهربا مقطوعة
   }
 }, {
   timestamps: true  // يحفظ وقت كل قراءة تلقائياً
