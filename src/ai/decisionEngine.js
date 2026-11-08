@@ -350,7 +350,7 @@ function buildCommand(stableLabel, riskScore, flame) {
 ? "closed"
 : "open",
     buzzer: isDanger ,
-    relay:  Boolean(flame) || stableLabel === 'FIRE',
+    relay:  Boolean(flame) || isDanger,          // خطر (غاز/حريق/DANGER) → اقطع الكهربا مع قفل الصمام
     status: stableLabel,
     risk:   riskScore,
   };
