@@ -25,6 +25,14 @@ const RISING_WARN_MQ6     = 1400;
 const IMMEDIATE_HOLD_MS   = num(process.env.IMMEDIATE_HOLD_SECONDS, 30) * 1000;  // تثبيت الخطر الفوري أثناء التعلم (مفيش stabilization وقتها)
 let immediateHold = null;   // { until, label, score }
 
+// ─── تعلم تلقائي لما الجهاز يتنقل لمكان جديد ───────────────────────────────────
+// لو الجهاز سكت أكتر من RELEARN_AFTER_OFFLINE_MINUTES (افتراضي 10) وبعدين رجع يبعت قراءات،
+// نعتبره اتنقل/اتقفل واتفتح، فنمسح الـ baseline ونتعلم المكان الجديد. 0 = تعطيل.
+const STALE_HISTORY_MS = 30 * 1000;   // قراءات أقدم من كده مش بتتقارن بيها القفزة المفاجئة
+const RELEARN_AFTER_MS = num(process.env.RELEARN_AFTER_OFFLINE_MINUTES, 10) * 60 * 1000;
+let lastReadingAt    = null;   // وقت آخر قراءة وصلت
+let lastReadingSaved = 0;      // آخر مرة حفظناه في الداتابيز (بنحفظه كل 30 ث عشان يفضل بعد restart)
+
 // ─── Learning Phase ───────────────────────────────────────────────────────────
 const LEARNING_DURATION_MS = 10 * 60 * 1000;
 let startTime = Date.now();
@@ -236,7 +244,9 @@ function assessFixedRules(raw, aiResult) {
   const noBaseline = isLearning() || !baseline;
 
   // قفزة مفاجئة: القراءة الحالية مقابل متوسط آخر 4 قراءات قبلها
-  const prev = sensorHistory.slice(0, -1).slice(-4);
+  // بنتجاهل القراءات القديمة (الجهاز كان مقفول/اتنقل) عشان ما تتحسبش قفزة كاذبة
+  const nowTs = Date.now();
+  const prev = sensorHistory.slice(0, -1).slice(-4).filter(r => nowTs - r.timestamp <= STALE_HISTORY_MS);
   if (prev.length > 0) {
     const avgOf   = key => prev.reduce((sum, r) => sum + r[key], 0) / prev.length;
     const mq2Rise = mq2 - avgOf('mq2');
@@ -492,6 +502,7 @@ function resetBaseline() {
 async function loadPersistedState() {
   await loadLatch();
   await loadBaseline();
+  await loadLastReading();
 }
 
 function resetLatch() {
@@ -540,8 +551,37 @@ function getVisionStatus() {
   };
 }
 
+// ─── فحص الغياب: هل الجهاز اتنقل؟ ────────────────────────────────────────────────
+function checkRelearn() {
+  const now = Date.now();
+  if (RELEARN_AFTER_MS > 0 && lastReadingAt && now - lastReadingAt > RELEARN_AFTER_MS) {
+    const mins = Math.round((now - lastReadingAt) / 60000);
+    console.log(`📍 الجهاز كان غايب ${mins} دقيقة ورجع — هنتعلم البيئة الجديدة (10 دقايق)`);
+    sensorHistory.length = 0;      // قراءات المكان القديم مالهاش لازمة
+    resetBaseline();
+  }
+  lastReadingAt = now;
+  if (now - lastReadingSaved > 30 * 1000) {
+    lastReadingSaved = now;
+    SystemState.findOneAndUpdate({ key: 'lastReading' }, { value: now }, { upsert: true })
+      .exec().catch(e => console.error('❌ lastReading persist error:', e.message));
+  }
+}
+
+async function loadLastReading() {
+  try {
+    const doc = await SystemState.findOne({ key: 'lastReading' });
+    if (doc && Number.isFinite(doc.value)) lastReadingAt = doc.value;
+  } catch (e) {
+    console.error('❌ lastReading load error:', e.message);
+  }
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 function processDecision(aiResult, raw) {
+  // 0. الجهاز غاب فترة طويلة ورجع؟ (اتنقل لمكان جديد) → نبدأ تعلم من جديد
+  checkRelearn();
+
   // 1. حدّث الـ History والـ Baseline
   updateSensorHistory(raw);
 
