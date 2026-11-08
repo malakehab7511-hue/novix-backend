@@ -44,6 +44,7 @@ const ingestReading = async (body) => {
     riskPercentage: decision.riskScore,
     servoStatus:    finalCmd.servo,
     buzzerStatus:   finalCmd.buzzer,
+    relayStatus:    finalCmd.relay,
   });
 
   // 4. لو في خطر حقيقي — احفظ Alert
