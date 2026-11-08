@@ -5,9 +5,25 @@
  * - أول 10 دقائق: وضع Learning — بيحفظ متوسط القراءات الطبيعية
  * - بعد كده: بيحكم على الزيادة فوق الطبيعي بس
  * - الـ AI Model دوره Confirmation بس مش القرار الأساسي
+ *
+ * [دمج تعديلات الـ AI V3] قواعد ثابتة (قفزة مفاجئة، حدود مطلقة، تأكيد الـ AI V3، لهب فوري)
+ * بتشتغل جنب الـ baseline: بترفع الخطورة بس ومبتقللهاش، وبتشتغل حتى أثناء فترة التعلم.
  */
 
 const SystemState = require('../models/systemState');
+
+// ─── Fixed Rules (من تعديلات الـ AI V3) — كلها قابلة للتغيير من متغيرات البيئة ───
+const num = (v, d) => (Number.isFinite(Number(v)) && v !== undefined && v !== '' ? Number(v) : d);
+const SUDDEN_MQ2          = num(process.env.SUDDEN_RISE_MQ2, 300);   // قفزة MQ2 عن متوسط آخر 4 قراءات
+const SUDDEN_MQ6          = num(process.env.SUDDEN_RISE_MQ6, 500);   // قفزة MQ6
+const ABS_DANGER_MQ2      = num(process.env.ABS_DANGER_MQ2, 1800);   // حد مطلق = خطر (دايماً شغال)
+const ABS_DANGER_MQ6      = num(process.env.ABS_DANGER_MQ6, 3200);
+const ABS_WARN_MQ2        = num(process.env.ABS_WARN_MQ2, 1000);     // حد مطلق = تحذير (لحد ما الـ baseline يجهز)
+const ABS_WARN_MQ6        = num(process.env.ABS_WARN_MQ6, 2000);
+const RISING_WARN_MQ2     = 700;                                      // ترند صاعد + قيمة عالية = تحذير (لحد ما الـ baseline يجهز)
+const RISING_WARN_MQ6     = 1400;
+const IMMEDIATE_HOLD_MS   = num(process.env.IMMEDIATE_HOLD_SECONDS, 30) * 1000;  // تثبيت الخطر الفوري أثناء التعلم (مفيش stabilization وقتها)
+let immediateHold = null;   // { until, label, score }
 
 // ─── Learning Phase ───────────────────────────────────────────────────────────
 const LEARNING_DURATION_MS = 10 * 60 * 1000;
@@ -131,7 +147,7 @@ function analyzeTrend() {
  *   و MQ6 دلوقتي = 2500
  *   الانحراف = (2500 - 1800) / 100 = 7 std devs → خطر جداً
  */
-function assessRisk(raw, trend) {
+function assessBaseline(raw, trend) {
   // لو لسه بيتعلم
   if (isLearning() || !baseline) {
     // أمان: اللهب خطر فوري حتى من غير baseline (وبنثبّته 30 ثانية عشان الصمام ما يرفرفش)
@@ -141,6 +157,7 @@ function assessRisk(raw, trend) {
         label:      'FIRE',
         riskLevel:  'danger',
         riskScore:  100,
+        immediate:  true,
         reason:     'Flame detected (learning-phase safety fallback)',
       };
     }
@@ -166,6 +183,7 @@ function assessRisk(raw, trend) {
       label:     'FIRE',
       riskLevel: 'danger',
       riskScore: 100,
+      immediate: true,
       reason:    'Flame detected',
       mq2Sigma,
       mq6Sigma,
@@ -208,13 +226,98 @@ function assessRisk(raw, trend) {
   return { label, riskLevel, riskScore, mq2Sigma, mq6Sigma, reason: `MQ2: ${mq2Sigma.toFixed(1)}σ, MQ6: ${mq6Sigma.toFixed(1)}σ` };
 }
 
+// ─── 3b. القواعد الثابتة (من تعديلات الـ AI V3) ──────────────────────────────
+// بترجّع null لو مفيش حاجة اتحققت. أي نتيجة بتتقارن بنتيجة الـ baseline ويتاخد الأخطر.
+// immediate:true = الصمام يتقفل فوراً من غير ما نستنى تصويت الـ stabilization.
+function assessFixedRules(raw, aiResult) {
+  const mq2   = Number(raw.mq2);
+  const mq6   = Number(raw.mq6);
+  const flame = raw.flame ? 1 : 0;
+  const noBaseline = isLearning() || !baseline;
+
+  // قفزة مفاجئة: القراءة الحالية مقابل متوسط آخر 4 قراءات قبلها
+  const prev = sensorHistory.slice(0, -1).slice(-4);
+  if (prev.length > 0) {
+    const avgOf   = key => prev.reduce((sum, r) => sum + r[key], 0) / prev.length;
+    const mq2Rise = mq2 - avgOf('mq2');
+    const mq6Rise = mq6 - avgOf('mq6');
+    if (mq2Rise >= SUDDEN_MQ2 || mq6Rise >= SUDDEN_MQ6) {
+      return {
+        label: 'GAS_LEAK', riskLevel: 'danger', riskScore: 100,
+        suddenRise: true, immediate: true,
+        reason: `Sudden rise detected - MQ2: +${Math.round(mq2Rise)}, MQ6: +${Math.round(mq6Rise)}`,
+      };
+    }
+  }
+
+  // لهب: حريق فوري
+  if (flame === 1) {
+    return { label: 'FIRE', riskLevel: 'danger', riskScore: 100, immediate: true, reason: 'Flame detected' };
+  }
+
+  // حد مطلق للخطر (شغال دايماً)
+  if (mq2 > ABS_DANGER_MQ2 || mq6 > ABS_DANGER_MQ6) {
+    return {
+      label: 'GAS_LEAK', riskLevel: 'danger', riskScore: 100, immediate: true,
+      reason: `High gas reading - MQ2: ${mq2}, MQ6: ${mq6}`,
+    };
+  }
+
+  // تأكيد الـ AI V3 (الـ alarm بيتفعّل بعد 10 قراءات متتالية أو لهب)
+  const aiLabel      = aiResult?.label || 'SAFE';
+  const aiConfidence = Number(aiResult?.confidence || 0);
+  if (aiResult?.alarm && ['FIRE', 'GAS_LEAK', 'DANGER'].includes(aiLabel)) {
+    return {
+      label: aiLabel === 'DANGER' ? 'GAS_LEAK' : aiLabel,
+      riskLevel: 'danger', riskScore: 90, immediate: true,
+      reason: `AI V3 confirmed ${aiResult.v3Label || aiLabel} (${aiConfidence}% hazard probability)`,
+    };
+  }
+  if (aiResult?.alarm && aiLabel === 'SMOKE') {
+    return {
+      label: 'WARNING', riskLevel: 'warning', riskScore: 50,
+      reason: `AI V3 confirmed ${aiResult.v3Label || aiLabel} (${aiConfidence}% hazard probability)`,
+    };
+  }
+
+  // قواعد التحذير المطلقة: بس لحد ما يبقى فيه baseline (بعدها الـ baseline أدق منها)
+  if (noBaseline) {
+    if (mq2 > ABS_WARN_MQ2 || mq6 > ABS_WARN_MQ6) {
+      return {
+        label: 'SMOKE', riskLevel: 'warning', riskScore: 60,
+        reason: `Elevated gas/smoke reading - MQ2: ${mq2}, MQ6: ${mq6}`,
+      };
+    }
+    if (analyzeTrend() === 'rising' && (mq2 > RISING_WARN_MQ2 || mq6 > RISING_WARN_MQ6)) {
+      return { label: 'WARNING', riskLevel: 'warning', riskScore: 40, reason: 'Sensor readings are rising' };
+    }
+  }
+  return null;
+}
+
+// ─── 3c. التقييم النهائي = الأخطر بين الـ baseline والقواعد الثابتة ─────────────
+const ASSESS_RANK = { LEARNING: 0, SAFE: 0, WARNING: 1, SMOKE: 1, GAS_LEAK: 2, DANGER: 2, FIRE: 3 };
+function assessRisk(raw, trend, aiResult) {
+  const base  = assessBaseline(raw, trend);
+  const fixed = assessFixedRules(raw, aiResult);
+  if (!fixed) return base;
+  const rank = a => (ASSESS_RANK[a.label] ?? 0);
+  if (rank(fixed) !== rank(base)) return rank(fixed) > rank(base) ? fixed : base;
+  if (!!fixed.immediate !== !!base.immediate) return fixed.immediate ? fixed : base;
+  return (fixed.riskScore ?? 0) > (base.riskScore ?? 0) ? fixed : base;
+}
+
 // ─── 4. Stabilization ────────────────────────────────────────────────────────
+function recordDecision(label) {
+  decisionHistory.push(label);
+  if (decisionHistory.length > DECISION_WINDOW) decisionHistory.shift();
+}
+
 function getStableLabel(newLabel) {
   // في وضع التعلم مش بنطبق stabilization
   if (newLabel === 'LEARNING') return 'LEARNING';
 
-  decisionHistory.push(newLabel);
-  if (decisionHistory.length > DECISION_WINDOW) decisionHistory.shift();
+  recordDecision(newLabel);
 
   if (decisionHistory.length >= DECISION_WINDOW) {
     const counts = {};
@@ -237,7 +340,7 @@ function buildCommand(stableLabel, riskScore, flame) {
 ? "closed"
 : "open",
     buzzer: isDanger ,
-    relay:  flame ? true : false,
+    relay:  Boolean(flame) || stableLabel === 'FIRE',
     status: stableLabel,
     risk:   riskScore,
   };
@@ -371,6 +474,7 @@ function resetBaseline() {
   baseline = null;
   learningBuffer.length = 0;
   learningFireUntil = 0;
+  immediateHold = null;
   startTime = Date.now();
   decisionHistory.length = 0;
   currentStableDecision = {
@@ -444,30 +548,29 @@ function processDecision(aiResult, raw) {
   // 2. Trend
   const trend = analyzeTrend();
 
-  // 3. تقييم الخطر من الـ Baseline (مش من الـ AI)
-  const assessment = assessRisk(raw, trend);
+  // 3. تقييم الخطر: الأخطر بين الـ baseline والقواعد الثابتة (قفزة مفاجئة / حدود مطلقة / تأكيد الـ AI V3 / لهب)
+  const assessment = assessRisk(raw, trend, aiResult);
+  const finalLabel = assessment.label;
 
-  // 4. الـ AI كـ Confirmation فقط
-  // لو الـ Baseline قال SAFE والـ AI قال DANGER → warning مش danger
-  // لو الاتنين قالوا DANGER → danger
-  let finalLabel = assessment.label;
-  if (aiResult.confidence < 85) {
-    aiResult.riskLevel = "safe";
-}
-
-  if (
-    assessment.riskLevel !== "safe" &&
-    aiResult.riskLevel === "danger"
-) {
-    finalLabel = assessment.label;
-}
-
-  // 5. Stabilization + دمج الكاميرا
+  // 4. دمج الكاميرا
   const vision = getActiveVision();
   const merged = mergeWithVision(finalLabel, vision, raw);
-  // الكاميرا أكدت الخطر على أكتر من فريم، فمنستناش تصويت الـ stabilization
-  const stableLabel = merged.bypass ? merged.label : getStableLabel(merged.label);
-  const riskScore   = Math.max(assessment.riskScore, merged.score);
+
+  // 5. Stabilization: الخطر الفوري (لهب / قفزة / حد مطلق / AI مؤكد / كاميرا) بيتنفذ على طول،
+  //    وبنسجّله في الـ history عشان الصمام ما يفتحش ويقفل مع أول قراءة سليمة بعده.
+  const immediate  = merged.bypass || assessment.immediate === true;
+  let stableLabel;
+  if (immediate) { stableLabel = merged.label; recordDecision(stableLabel); }
+  else           { stableLabel = getStableLabel(merged.label); }
+  let riskScore = Math.max(assessment.riskScore, merged.score);
+
+  // أثناء التعلم مفيش stabilization، فبنثبّت الخطر الفوري كام ثانية عشان الصمام ما يفتحش ويقفل مع كل قراءة
+  if (immediate && ['FIRE', 'GAS_LEAK', 'DANGER'].includes(stableLabel)) {
+    immediateHold = { until: Date.now() + IMMEDIATE_HOLD_MS, label: stableLabel, score: riskScore };
+  } else if (stableLabel === 'LEARNING' && immediateHold && Date.now() < immediateHold.until) {
+    stableLabel = immediateHold.label;
+    riskScore   = Math.max(riskScore, immediateHold.score);
+  }
 
   // 6. riskLevel
   const riskLevel = {
@@ -497,12 +600,12 @@ function processDecision(aiResult, raw) {
     ? `LEARNING (${Math.round((LEARNING_DURATION_MS - (Date.now() - startTime)) / 1000)}s left)`
     : `Baseline ready`;
 
-  console.log(`[${learningStatus}] Baseline: ${assessment.reason ?? '-'} | Label: ${finalLabel} → Stable: ${stableLabel} | Risk: ${riskScore}%${vision ? ` | 📷 ${vision.cameraName}: ${vision.level}` : ''}`);
+  console.log(`[${learningStatus}] ${assessment.reason ?? '-'} | AI: ${aiResult?.label ?? 'N/A'} (${aiResult?.confidence ?? 0}%) | Label: ${finalLabel} → Stable: ${stableLabel} | Risk: ${riskScore}%${vision ? ` | 📷 ${vision.cameraName}: ${vision.level}` : ''}`);
 
   return {
     command,
     label:      stableLabel,
-    rawLabel:   aiResult.label,
+    rawLabel:   aiResult?.label ?? 'SAFE',
     riskLevel,
     riskScore,
     trend,
@@ -510,9 +613,9 @@ function processDecision(aiResult, raw) {
     valveLatched,
     isLearning: isLearning(),
     baseline:   baseline ? { mq2: baseline.mq2.mean, mq6: baseline.mq6.mean } : null,
-    confidence: aiResult.confidence ?? 0,
-    isAnomaly:  aiResult.isAnomaly  ?? false,
-    forecast:   aiResult.forecast   ?? null,
+    confidence: aiResult?.confidence ?? 0,
+    isAnomaly:  aiResult?.isAnomaly  ?? false,
+    forecast:   aiResult?.forecast   ?? null,
   };
 }
 
