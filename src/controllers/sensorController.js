@@ -4,6 +4,66 @@ const { predictRisk }      = require('../ai/predict');
 const { processDecision, getLatestCommand, getLearningStatus, resetBaseline } = require('../ai/decisionEngine');
 const overrides = require('../control/overrides');
 
+// ─── التنبيهات: من غير تكرار ─────────────────────────────────────────────────
+// الخطر المستمر بيبعت قراءة كل ثانيتين. بدل إنذار جديد كل مرة (كان بيوصل لـ 99+ في دقائق):
+//  • لو فيه إنذار مفتوح بنفس المستوى اتشاف من أقل من ALERT_COOLDOWN_MS → نزوّد عداده بس (من غير إشعار جديد)
+//  • لو الوضع رجع آمن لمدة ALERT_AUTO_RESOLVE_MS → إنذارات السنسورات المفتوحة بتتقفل لوحدها
+const ALERT_COOLDOWN_MS     = Number(process.env.ALERT_COOLDOWN_MS)     || 5 * 60 * 1000;
+const ALERT_AUTO_RESOLVE_MS = Number(process.env.ALERT_AUTO_RESOLVE_MS) || 2 * 60 * 1000;
+let safeSince = 0;
+
+async function handleSensorAlert(decision, values) {
+  const { mq2, mq6, flame, temperature } = values;
+
+  if (decision.riskLevel === 'safe') {
+    const now = Date.now();
+    if (!safeSince) { safeSince = now; return; }
+    if (now - safeSince >= ALERT_AUTO_RESOLVE_MS) {
+      safeSince = now;                                   // نكرر الفحص كل ALERT_AUTO_RESOLVE_MS بس
+      const r = await Alert.updateMany(
+        { source: 'sensor', isResolved: false },
+        { isResolved: true, resolvedAt: new Date() }
+      );
+      if (r.modifiedCount) global.io.emit('alertsResolvedAll', { count: r.modifiedCount, auto: true });
+    }
+    return;
+  }
+
+  safeSince = 0;
+  let alertType = 'combined';
+  if (flame && mq2 <= 400 && mq6 <= 400)  alertType = 'fire';
+  else if (!flame && temperature <= 45)    alertType = 'gas_leak';
+  else if (temperature > 45 && !flame)     alertType = 'high_temperature';
+
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - ALERT_COOLDOWN_MS);
+
+  // تحديث ذري: لو لاقى إنذار مفتوح بنفس المستوى يزوّده، لو لأ يرجّع null
+  const existing = await Alert.findOneAndUpdate(
+    {
+      source: 'sensor',
+      riskLevel: decision.riskLevel,
+      isResolved: false,
+      $or: [{ lastSeenAt: { $gte: cutoff } }, { lastSeenAt: null, createdAt: { $gte: cutoff } }],
+    },
+    {
+      $inc: { count: 1 },
+      $set: { lastSeenAt: now, type: alertType, message: decision.label, sensorValues: values },
+    },
+    { new: true }
+  );
+  if (existing) return;
+
+  const alert = await Alert.create({
+    type:         alertType,
+    message:      decision.label,
+    riskLevel:    decision.riskLevel,
+    sensorValues: values,
+    lastSeenAt:   now,
+  });
+  global.io.emit('newAlert', alert);
+}
+
 // ─── معالجة قراءة واحدة (مشتركة بين HTTP و MQTT) ──────────────────────────────
 // بترجّع { error } لو القراءة غلط، أو { sensorData, decision }
 const ingestReading = async (body) => {
@@ -47,21 +107,11 @@ const ingestReading = async (body) => {
     relayStatus:    finalCmd.relay,
   });
 
-  // 4. لو في خطر حقيقي — احفظ Alert
-  if (decision.riskLevel !== 'safe') {
-    let alertType = 'combined';
-    if (flame && mq2 <= 400 && mq6 <= 400)  alertType = 'fire';
-    else if (!flame && temperature <= 45)    alertType = 'gas_leak';
-    else if (temperature > 45 && !flame)     alertType = 'high_temperature';
-
-    const alert = await Alert.create({
-      type:         alertType,
-      message:      decision.label,
-      riskLevel:    decision.riskLevel,
-      sensorValues: { mq2, mq6, flame, temperature, humidity },
-    });
-
-    global.io.emit('newAlert', alert);
+  // 4. التنبيهات: إنذار واحد لكل حادثة (مش واحد لكل قراءة)
+  try {
+    await handleSensorAlert(decision, { mq2, mq6, flame, temperature, humidity });
+  } catch (e) {
+    console.error('⚠️ alert error:', e.message);   // مشكلة في التنبيه ما توقفش القراءة
   }
 
   // 5. بعت للـ Dashboard real-time
@@ -152,6 +202,7 @@ const resetBaselineHandler = (req, res) => {
 
 module.exports = {
   ingestReading,
+  handleSensorAlert,
   receiveSensorData,
   getLatestReading,
   getAllReadings,

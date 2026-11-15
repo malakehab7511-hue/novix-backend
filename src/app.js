@@ -9,6 +9,7 @@ const alertRoutes = require('./routes/alerts');
 const dashboardRoutes = require('./routes/dashboard');
 const visionRoutes = require('./routes/vision');
 const deviceRoutes = require('./routes/devices');
+const userDeviceRoutes = require('./routes/userDevices');
 const errorHandler = require('./middleware/errorHandler');
 const { loginLimiter, verifyLimiter, authLimiter } = require('./middleware/rateLimits');
 
@@ -54,7 +55,8 @@ app.use('/api/sensors', sensorRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/vision', visionRoutes);
-app.use('/api/devices', deviceRoutes);
+app.use('/api/devices', deviceRoutes);          // ESP32: أوامر التحكم + الحالة
+app.use('/api/my-devices', userDeviceRoutes);   // أجهزة المستخدمين (موبايل/تابلت/كمبيوتر)
 
 // Health Check
 app.get('/', (req, res) => {
