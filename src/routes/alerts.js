@@ -6,14 +6,12 @@ const {
   resolveAlert,
   resolveAllAlerts,
 } = require('../controllers/alertController');
-const { protect } = require('../middleware/auth');
+const { protect, optionalAuth } = require('../middleware/auth');
 
-// كل مسارات التنبيهات محتاجة تسجيل دخول
-router.use(protect);
-
-router.get('/all', getAllAlerts);
-router.get('/active', getActiveAlerts);
-router.patch('/resolve-all', resolveAllAlerts);
-router.patch('/resolve/:id', resolveAlert);
+// القراءة للزوار، والأكشن (حل التنبيهات) محتاج تسجيل دخول
+router.get('/all', optionalAuth, getAllAlerts);
+router.get('/active', optionalAuth, getActiveAlerts);
+router.patch('/resolve-all', protect, resolveAllAlerts);
+router.patch('/resolve/:id', protect, resolveAlert);
 
 module.exports = router;

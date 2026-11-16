@@ -9,16 +9,16 @@ const {
   resetBaselineHandler,
 } = require('../controllers/sensorController');
 const deviceKey = require('../middleware/deviceKey');
-const { protect } = require('../middleware/auth');
+const { protect, optionalAuth } = require('../middleware/auth');
 
 // ─── الجهاز (ESP32): مفتاح x-api-key ─────────────────────────────────────────
 router.post('/data', deviceKey, receiveSensorData);
 router.get('/command', deviceKey, getDeviceCommand);
 
 // ─── الداشبورد: تسجيل دخول (JWT) ─────────────────────────────────────────────
-router.get('/latest', protect, getLatestReading);
-router.get('/all', protect, getAllReadings);
-router.get('/baseline', protect, getBaselineStatus);
+router.get('/latest', optionalAuth, getLatestReading);
+router.get('/all', optionalAuth, getAllReadings);
+router.get('/baseline', optionalAuth, getBaselineStatus);
 router.post('/baseline/reset', protect, resetBaselineHandler);
 
 module.exports = router;
