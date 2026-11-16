@@ -3,6 +3,8 @@ const path  = require('path');
 const axios = require('axios');
 const Alert = require('../models/alert');
 const { setVisionEvent, getVisionStatus, resetLatch } = require('../ai/decisionEngine');
+const mqttService = require('../mqtt/mqttService');
+const DEVICE_ID = process.env.DEVICE_ID || 'novix-001';
 
 // ─── الصور ────────────────────────────────────────────────────────────────────
 const SNAP_DIR = path.join(__dirname, '../../snapshots');
@@ -68,6 +70,8 @@ const receiveVisionEvent = async (req, res) => {
 
     // 1. حدّث الـ Decision Engine (ده اللي بيقفل الصمام ويحفظ الـ latch)
     setVisionEvent(ev);
+    // خطر حرج من الكاميرا: ابعت القرار للـ ESP32 فوراً (من غير ما نستنى قراءة السنسور الجاية)
+    if (ev.level === 'fire_large' || ev.level === 'smoke_heavy') mqttService.publishDecision(DEVICE_ID);
 
     // 2. تنبيه + صورة (مع cooldown)
     const offline = ev.connected === false;
