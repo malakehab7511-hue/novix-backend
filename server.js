@@ -34,19 +34,17 @@ const io = new Server(server, {
   },
 });
 
-// لازم JWT صالح عشان أي حد يتصل بالـ socket
+// الزائر يقدر يستقبل التحديثات الحية؛ التوكن اختياري
 io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth && socket.handshake.auth.token;
-    if (!token) return next(new Error('unauthorized'));
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('_id');
-    if (!user) return next(new Error('unauthorized'));
-    socket.userId = String(user._id);
-    next();
-  } catch {
-    next(new Error('unauthorized'));
-  }
+    if (token) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select('_id');
+      if (user) socket.userId = String(user._id);
+    }
+  } catch { /* زائر */ }
+  next();
 });
 
 // تصدير io عشان نستخدمه في أي مكان
