@@ -34,7 +34,7 @@ let lastReadingAt    = null;   // وقت آخر قراءة وصلت
 let lastReadingSaved = 0;      // آخر مرة حفظناه في الداتابيز (بنحفظه كل 30 ث عشان يفضل بعد restart)
 
 // ─── Learning Phase ───────────────────────────────────────────────────────────
-const LEARNING_DURATION_MS = 10 * 60 * 1000;
+const LEARNING_DURATION_MS = num(process.env.LEARNING_MINUTES, 10) * 60 * 1000;   // للتجربة: LEARNING_MINUTES=3 في Railway
 let startTime = Date.now();
 let learningFireUntil = 0;   // أثناء التعلم: لو اتشاف لهب نفضل على FIRE شوية عشان الصمام ما يفتحش ويقفل
 
