@@ -41,4 +41,17 @@ const protect = async (req, res, next) => {
   }
 };
 
-module.exports = { protect };
+// بيسمح بالقراءة من غير تسجيل دخول، ولو فيه توكن صالح بيحط req.user
+const optionalAuth = async (req, res, next) => {
+  try {
+    const h = req.headers.authorization;
+    if (h && h.startsWith('Bearer')) {
+      const decoded = jwt.verify(h.split(' ')[1], process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select('-password');
+      if (user) req.user = user;
+    }
+  } catch { /* توكن غلط أو null = زائر */ }
+  next();
+};
+
+module.exports = { protect, optionalAuth };
