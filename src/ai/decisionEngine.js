@@ -243,6 +243,18 @@ function assessFixedRules(raw, aiResult) {
   const flame = raw.flame ? 1 : 0;
   const noBaseline = isLearning() || !baseline;
 
+  // أثناء التعلم: مفيش تحذيرات ولا قفزات ولا تأكيد AI
+  // بس حد الخطر المطلق (الغاز العالي جداً) عشان الأمان، واللهب بيتعالج في assessBaseline
+  if (noBaseline) {
+    if (mq2 > ABS_DANGER_MQ2 || mq6 > ABS_DANGER_MQ6) {
+      return {
+        label: 'GAS_LEAK', riskLevel: 'danger', riskScore: 100, immediate: true,
+        reason: `High gas reading - MQ2: ${mq2}, MQ6: ${mq6}`,
+      };
+    }
+    return null;
+  }
+
   // قفزة مفاجئة: القراءة الحالية مقابل متوسط آخر 4 قراءات قبلها
   // بنتجاهل القراءات القديمة (الجهاز كان مقفول/اتنقل) عشان ما تتحسبش قفزة كاذبة
   const nowTs = Date.now();
